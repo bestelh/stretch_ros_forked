@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+
+from std_srvs.srv import Trigger, TriggerRequest, TriggerResponse
+import rospy
+import time
+import argparse as ap
+
+import hello_helpers.hello_misc as hm
+
+
+class CoffeeDeliveryNode(hm.HelloNode):
+    """Simple orchestrator that calls the existing grasp and handover services.
+
+    This node does not duplicate perception or motion logic — it calls the
+    services already published by `grasp_object` and `handover_object`.
+    """
+
+    def __init__(self):
+        hm.HelloNode.__init__(self)
+        self.rate = 10.0
+
+    def trigger_coffee_delivery_callback(self, request):
+        rospy.loginfo('coffee_delivery: requested -> calling grasp service')
+
+        # Call the grasp service
+        try:
+            rospy.wait_for_service('/grasp_object/trigger_grasp_object', timeout=10.0)
+        except rospy.ROSException:
+            return TriggerResponse(success=False, message='Timeout waiting for /grasp_object/trigger_grasp_object')
+
+        try:
+            grasp_srv = rospy.ServiceProxy('/grasp_object/trigger_grasp_object', Trigger)
+            grasp_resp = grasp_srv(TriggerRequest())
+        except rospy.ServiceException as e:
+            return TriggerResponse(success=False, message='Grasp service call failed: {0}'.format(e))
+
+        if not grasp_resp.success:
+            return TriggerResponse(success=False, message='Grasp failed: {0}'.format(grasp_resp.message))
+
+        rospy.loginfo('coffee_delivery: grasp succeeded -> waiting 1s before handover')
+        rospy.sleep(1.0)
+
+        # Call the handover/deliver service
+        try:
+            rospy.wait_for_service('/deliver_object/trigger_deliver_object', timeout=10.0)
+        except rospy.ROSException:
+            return TriggerResponse(success=False, message='Timeout waiting for /deliver_object/trigger_deliver_object')
+
+        try:
+            deliver_srv = rospy.ServiceProxy('/deliver_object/trigger_deliver_object', Trigger)
+            deliver_resp = deliver_srv(TriggerRequest())
+        except rospy.ServiceException as e:
+            return TriggerResponse(success=False, message='Deliver service call failed: {0}'.format(e))
+
+        if not deliver_resp.success:
+            return TriggerResponse(success=False, message='Deliver failed: {0}'.format(deliver_resp.message))
+
+        return TriggerResponse(success=True, message='Coffee delivered successfully')
+
+    def main(self):
+        # Reuse HelloNode initialization
+        hm.HelloNode.main(self, 'coffee_delivery', 'coffee_delivery', wait_for_first_pointcloud=False)
+
+        # Expose a service to trigger the whole behavior
+        self.trigger_service = rospy.Service('/coffee_delivery/trigger_coffee_delivery', Trigger, self.trigger_coffee_delivery_callback)
+
+        rate = rospy.Rate(self.rate)
+        while not rospy.is_shutdown():
+            rate.sleep()
+
+
+if __name__ == '__main__':
+    try:
+        parser = ap.ArgumentParser(description='Coffee delivery behavior (grasp then handover).')
+        args, unknown = parser.parse_known_args()
+        node = CoffeeDeliveryNode()
+        node.main()
+    except KeyboardInterrupt:
+        rospy.loginfo('interrupt received, so shutting down')
